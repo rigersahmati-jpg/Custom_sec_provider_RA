@@ -1,0 +1,33 @@
+{
+  "provider": {
+    "failClosed": true,
+    "entitlementCacheTtlSeconds": 60,
+    "securityPostureDefault": "Normal",
+    "incidentModeAction": "ReadOnly"
+  },
+  "endpoints": {
+    "identityService": "https://api.your-saas.com/security/identity",
+    "entitlementsService": "https://api.your-saas.com/security/entitlements",
+    "billingService": "https://api.your-saas.com/billing"
+  },
+  "redis": {
+    "connectionString": "redis-prod.internal:6379,password=REPLACE_ME,ssl=true",
+    "incidentModeKey": "security:global:incident_mode"
+  },
+  "seatEnforcement": {
+    "enabled": true,
+    "overageAction": "Deny",
+    "viewerCounterKeyTemplate": "tenant:{tenantId}:seats:viewer",
+    "designerCounterKeyTemplate": "tenant:{tenantId}:seats:designer"
+  },
+  "claimMapping": {
+    "tenantId": "tenant_id",
+    "userId": "user_id",
+    "region": "data_region",
+    "planTier": "plan_tier",
+    "allowExport": "allow_export",
+    "allowScheduling": "allow_scheduling",
+    "allowPremiumDatasets": "allow_premium_datasets",
+    "securityPosture": "security_posture"
+  }
+}

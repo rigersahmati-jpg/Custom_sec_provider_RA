@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CustomSecProviderRAConfig",
+  "type": "object",
+  "required": [
+    "provider",
+    "endpoints",
+    "redis",
+    "seatEnforcement",
+    "claimMapping"
+  ],
+  "properties": {
+    "provider": {
+      "type": "object",
+      "required": [
+        "failClosed",
+        "entitlementCacheTtlSeconds",
+        "securityPostureDefault",
+        "incidentModeAction"
+      ],
+      "properties": {
+        "failClosed": { "type": "boolean", "default": true },
+        "entitlementCacheTtlSeconds": { "type": "integer", "minimum": 1, "maximum": 600, "default": 60 },
+        "securityPostureDefault": { "type": "string", "enum": ["Normal", "IncidentMode"], "default": "Normal" },
+        "incidentModeAction": { "type": "string", "enum": ["ReadOnly", "Deny"], "default": "ReadOnly" }
+      }
+    },
+    "endpoints": {
+      "type": "object",
+      "required": ["identityService", "entitlementsService"],
+      "properties": {
+        "identityService": { "type": "string", "format": "uri" },
+        "entitlementsService": { "type": "string", "format": "uri" },
+        "billingService": { "type": "string", "format": "uri" }
+      }
+    },
+    "redis": {
+      "type": "object",
+      "required": ["connectionString", "incidentModeKey"],
+      "properties": {
+        "connectionString": { "type": "string", "minLength": 1 },
+        "incidentModeKey": { "type": "string", "minLength": 1 }
+      }
+    },
+    "seatEnforcement": {
+      "type": "object",
+      "required": ["enabled", "overageAction", "viewerCounterKeyTemplate", "designerCounterKeyTemplate"],
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "overageAction": { "type": "string", "enum": ["Deny", "DowngradeToReadOnly"], "default": "Deny" },
+        "viewerCounterKeyTemplate": { "type": "string", "default": "tenant:{tenantId}:seats:viewer" },
+        "designerCounterKeyTemplate": { "type": "string", "default": "tenant:{tenantId}:seats:designer" }
+      }
+    },
+    "claimMapping": {
+      "type": "object",
+      "required": [
+        "tenantId",
+        "userId",
+        "region",
+        "planTier",
+        "allowExport",
+        "allowScheduling",
+        "allowPremiumDatasets",
+        "securityPosture"
+      ],
+      "properties": {
+        "tenantId": { "type": "string", "default": "tenant_id" },
+        "userId": { "type": "string", "default": "user_id" },
+        "region": { "type": "string", "default": "data_region" },
+        "planTier": { "type": "string", "default": "plan_tier" },
+        "allowExport": { "type": "string", "default": "allow_export" },
+        "allowScheduling": { "type": "string", "default": "allow_scheduling" },
+        "allowPremiumDatasets": { "type": "string", "default": "allow_premium_datasets" },
+        "securityPosture": { "type": "string", "default": "security_posture" }
+      }
+    }
+  },
+  "additionalProperties": false
+}
