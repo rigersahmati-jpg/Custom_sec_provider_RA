@@ -111,7 +111,7 @@ public sealed class PolicyEngineTests
     {
         var identity = new FakeIdentityTenantService(user);
         var entitlement = new FakeEntitlementService(entitlements ?? new EntitlementContext
-n        {
+        {
             PlanTier = PlanTier.Free,
             AllowExport = false,
             AllowScheduling = false,
