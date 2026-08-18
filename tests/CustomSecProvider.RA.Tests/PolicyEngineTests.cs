@@ -1,3 +1,4 @@
+using Xunit;
 using CustomSecProvider.RA.Contracts;
 using CustomSecProvider.RA.Models;
 using CustomSecProvider.RA.Services;
