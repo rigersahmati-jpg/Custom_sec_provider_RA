@@ -1,136 +1,284 @@
 using CustomSecProvider.RA.Contracts;
 using CustomSecProvider.RA.Models;
+using Microsoft.Extensions.Logging;
 
 namespace CustomSecProvider.RA.Services;
 
-public sealed class PolicyEngine(
-    IIdentityTenantService identityTenantService,
-    IEntitlementService entitlementService,
-    ISeatCounterStore seatCounterStore,
-    ISecurityPostureService postureService,
-    IAuditDecisionSink auditSink)
+/// <summary>
+/// Core policy evaluation engine implementing the Zero-Sync Governance model.
+/// Evaluates tenant/user state, entitlements, seats, and incident mode in real time.
+/// </summary>
+public class PolicyEngine : IPolicyEngine
 {
-    private const string ReasonAllowed = "ALLOWED";
-    private const string ReasonTenantSuspended = "TENANT_SUSPENDED";
-    private const string ReasonUserDisabled = "USER_DISABLED";
-    private const string ReasonSeatExceeded = "SEAT_LIMIT_EXCEEDED";
-    private const string ReasonIncidentMode = "INCIDENT_MODE";
+    private readonly ITenantService _tenantService;
+    private readonly IIdentityService _identityService;
+    private readonly IEntitlementsService _entitlementsService;
+    private readonly ISeatManagementService _seatService;
+    private readonly IIncidentModeService _incidentModeService;
+    private readonly IAuditLogger _auditLogger;
+    private readonly ILogger<PolicyEngine> _logger;
 
-    public async Task<PolicyDecision> EvaluateAsync(string userToken, CancellationToken cancellationToken = default)
+    public PolicyEngine(
+        ITenantService tenantService,
+        IIdentityService identityService,
+        IEntitlementsService entitlementsService,
+        ISeatManagementService seatService,
+        IIncidentModeService incidentModeService,
+        IAuditLogger auditLogger,
+        ILogger<PolicyEngine> logger)
     {
-        var user = await identityTenantService.GetUserContextAsync(userToken, cancellationToken);
+        _tenantService = tenantService;
+        _identityService = identityService;
+        _entitlementsService = entitlementsService;
+        _seatService = seatService;
+        _incidentModeService = incidentModeService;
+        _auditLogger = auditLogger;
+        _logger = logger;
+    }
 
-        if (!user.IsTenantActive)
-            return await Deny(user, ReasonTenantSuspended, cancellationToken);
+    public async Task<PolicyDecision> EvaluateAsync(
+        string userId,
+        string tenantId,
+        CancellationToken cancellationToken = default)
+    {
+        var decision = new PolicyDecision();
 
-        if (!user.IsUserActive)
-            return await Deny(user, ReasonUserDisabled, cancellationToken);
-
-        var posture = await postureService.GetPostureAsync(cancellationToken);
-        if (posture == SecurityPosture.IncidentMode)
+        try
         {
-            var incidentDecision = BuildReadOnlyDecision(user, ReasonIncidentMode);
-            await auditSink.WriteAsync(user.TenantId, user.UserId, incidentDecision.IsAllowed, incidentDecision.ReasonCode, incidentDecision.Roles, cancellationToken);
-            return incidentDecision;
+            // 1. Resolve tenant context
+            var tenant = await _tenantService.ResolveTenantAsync(tenantId, cancellationToken);
+            if (tenant == null)
+            {
+                decision.IsAllowed = false;
+                decision.ReasonCode = ReasonCodes.InvalidToken;
+                decision.Message = "Tenant not found.";
+                _logger.LogWarning("Policy evaluation failed: tenant not found. TenantId={TenantId}", tenantId);
+                return decision;
+            }
+
+            // 2. Check tenant status
+            if (tenant.Status == TenantStatus.Suspended)
+            {
+                decision.IsAllowed = false;
+                decision.ReasonCode = ReasonCodes.TenantSuspended;
+                decision.Message = "Your organization's analytics access is temporarily suspended.";
+                _logger.LogWarning(
+                    "Policy evaluation blocked: tenant suspended. TenantId={TenantId}, UserId={UserId}",
+                    tenantId, userId);
+                await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
+                return decision;
+            }
+
+            if (tenant.Status == TenantStatus.PastDue)
+            {
+                decision.IsAllowed = false;
+                decision.ReasonCode = ReasonCodes.TenantPastDue;
+                decision.Message = "Your organization's account is past due. Please contact billing.";
+                _logger.LogWarning(
+                    "Policy evaluation blocked: tenant past due. TenantId={TenantId}, UserId={UserId}",
+                    tenantId, userId);
+                await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
+                return decision;
+            }
+
+            // 3. Resolve user context
+            var user = await _identityService.ResolveUserAsync(userId, cancellationToken);
+            if (user == null)
+            {
+                decision.IsAllowed = false;
+                decision.ReasonCode = ReasonCodes.InvalidToken;
+                decision.Message = "User not found.";
+                _logger.LogWarning(
+                    "Policy evaluation failed: user not found. UserId={UserId}, TenantId={TenantId}",
+                    userId, tenantId);
+                return decision;
+            }
+
+            // 4. Check user status
+            if (user.Status == UserStatus.Disabled)
+            {
+                decision.IsAllowed = false;
+                decision.ReasonCode = ReasonCodes.UserDisabled;
+                decision.Message = "Your account is disabled. Please contact your administrator.";
+                _logger.LogWarning(
+                    "Policy evaluation blocked: user disabled. UserId={UserId}, TenantId={TenantId}",
+                    userId, tenantId);
+                await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
+                return decision;
+            }
+
+            if (user.Status == UserStatus.Suspended)
+            {
+                decision.IsAllowed = false;
+                decision.ReasonCode = ReasonCodes.UserSuspended;
+                decision.Message = "Your account is suspended. Please contact your administrator.";
+                _logger.LogWarning(
+                    "Policy evaluation blocked: user suspended. UserId={UserId}, TenantId={TenantId}",
+                    userId, tenantId);
+                await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
+                return decision;
+            }
+
+            // 5. Check incident mode (break-glass security)
+            var incidentModeEnabled = await _incidentModeService.IsIncidentModeEnabledAsync(cancellationToken);
+            if (incidentModeEnabled)
+            {
+                decision.Roles = new[] { "WYN_READ_ONLY" };
+                decision.Claims["security_posture"] = "incident";
+                decision.Claims["allow_export"] = false;
+                decision.Claims["allow_schedule"] = false;
+                decision.ReasonCode = ReasonCodes.IncidentMode;
+                decision.Message = "System is in incident mode. Access is read-only.";
+                decision.IsAllowed = true;
+                _logger.LogInformation(
+                    "Incident mode active. User downgraded to read-only. UserId={UserId}, TenantId={TenantId}",
+                    userId, tenantId);
+                await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
+                return decision;
+            }
+
+            // 6. Get plan and entitlements
+            var plan = await _entitlementsService.GetPlanAsync(tenantId, cancellationToken);
+            var features = await _entitlementsService.GetEnabledFeaturesAsync(tenantId, cancellationToken);
+
+            // 7. Check seat limits based on seat type
+            if (user.SeatType == SeatType.Designer || user.SeatType == SeatType.Admin)
+            {
+                var canAllocate = await _seatService.CanAllocateSeatAsync(tenantId, user.SeatType, cancellationToken);
+                if (!canAllocate)
+                {
+                    decision.IsAllowed = false;
+                    decision.ReasonCode = ReasonCodes.SeatLimitExceeded;
+                    decision.Message = "Your organization has reached the maximum Designer seats. Please upgrade or contact support.";
+                    _logger.LogWarning(
+                        "Policy evaluation blocked: designer seat limit exceeded. UserId={UserId}, TenantId={TenantId}",
+                        userId, tenantId);
+                    await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
+                    return decision;
+                }
+            }
+            else if (user.SeatType == SeatType.Viewer)
+            {
+                var canAllocate = await _seatService.CanAllocateSeatAsync(tenantId, SeatType.Viewer, cancellationToken);
+                if (!canAllocate)
+                {
+                    decision.IsAllowed = false;
+                    decision.ReasonCode = ReasonCodes.SeatLimitExceeded;
+                    decision.Message = "Your organization has reached the maximum Viewer seats. Please upgrade or contact support.";
+                    _logger.LogWarning(
+                        "Policy evaluation blocked: viewer seat limit exceeded. UserId={UserId}, TenantId={TenantId}",
+                        userId, tenantId);
+                    await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
+                    return decision;
+                }
+            }
+
+            // 8. Map plan to Wyn roles and inject claims
+            ApplyRoleMapping(decision, plan, features, user, tenant);
+
+            // 9. Mark success
+            decision.IsAllowed = true;
+            decision.ReasonCode = ReasonCodes.Success;
+            decision.Message = "Access granted.";
+
+            _logger.LogInformation(
+                "Policy evaluation succeeded. UserId={UserId}, TenantId={TenantId}, Plan={Plan}, Roles={Roles}",
+                userId, tenantId, plan, string.Join(",", decision.Roles));
+
+            await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
+            return decision;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Policy evaluation error. UserId={UserId}, TenantId={TenantId}",
+                userId, tenantId);
+
+            decision.IsAllowed = false;
+            decision.ReasonCode = ReasonCodes.BackendUnavailable;
+            decision.Message = "An error occurred during policy evaluation. Please retry.";
+            return decision;
+        }
+    }
+
+    private void ApplyRoleMapping(
+        PolicyDecision decision,
+        SubscriptionPlan plan,
+        string[] features,
+        UserContext user,
+        TenantContext tenant)
+    {
+        // Initialize claims
+        decision.Claims["tenant_id"] = tenant.TenantId;
+        decision.Claims["user_id"] = user.UserId;
+        decision.Claims["data_region"] = tenant.DataRegion;
+        decision.Claims["plan_tier"] = plan.ToString();
+        decision.Claims["security_posture"] = "normal";
+        decision.Claims["seat_type"] = user.SeatType.ToString();
+
+        if (!string.IsNullOrEmpty(tenant.OrgUnit))
+        {
+            decision.Claims["org_unit"] = tenant.OrgUnit;
         }
 
-        var entitlements = await entitlementService.GetEntitlementsAsync(user.TenantId, cancellationToken);
-
-        var isSeatAllowed = await IsSeatAllowed(user, entitlements, cancellationToken);
-        if (!isSeatAllowed)
-            return await Deny(user, ReasonSeatExceeded, cancellationToken);
-
-        var allowDecision = BuildAllowedDecision(user, entitlements);
-        await auditSink.WriteAsync(user.TenantId, user.UserId, allowDecision.IsAllowed, allowDecision.ReasonCode, allowDecision.Roles, cancellationToken);
-        return allowDecision;
-    }
-
-    private async Task<bool> IsSeatAllowed(UserContext user, EntitlementContext entitlements, CancellationToken cancellationToken)
-    {
-        var current = await seatCounterStore.GetCurrentCountAsync(user.TenantId, user.SeatType, cancellationToken);
-
-        return user.SeatType switch
+        if (features.Length > 0)
         {
-            SeatType.Viewer => current < entitlements.MaxConcurrentViewers,
-            SeatType.Designer => current < entitlements.MaxConcurrentDesigners,
-            _ => false
-        };
-    }
+            decision.Claims["enabled_features"] = features;
+        }
 
-    private static PolicyDecision BuildAllowedDecision(UserContext user, EntitlementContext entitlements)
-    {
-        var roles = ResolveRoles(user, entitlements);
+        // Map plan to Wyn roles
+        var roles = new List<string>();
 
-        var claims = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        switch (plan)
         {
-            ["tenant_id"] = user.TenantId,
-            ["user_id"] = user.UserId,
-            ["seat_type"] = user.SeatType.ToString(),
-            ["plan_tier"] = entitlements.PlanTier.ToString(),
-            ["data_region"] = user.DataRegion,
-            ["allow_export"] = entitlements.AllowExport.ToString(),
-            ["allow_scheduling"] = entitlements.AllowScheduling.ToString(),
-            ["allow_premium_datasets"] = entitlements.AllowPremiumDatasets.ToString(),
-            ["security_posture"] = SecurityPosture.Normal.ToString()
-        };
+            case SubscriptionPlan.Enterprise:
+                if (user.SeatType == SeatType.Admin)
+                {
+                    roles.Add("WYN_TENANT_ADMIN");
+                }
+                else if (user.SeatType == SeatType.Designer)
+                {
+                    roles.Add("WYN_DESIGNER");
+                }
+                else
+                {
+                    roles.Add("WYN_VIEWER");
+                }
 
-        return new PolicyDecision
-        {
-            IsAllowed = true,
-            ReasonCode = ReasonAllowed,
-            Roles = roles,
-            Claims = claims
-        };
-    }
+                // Enterprise features
+                decision.Claims["allow_export"] = features.Contains("export");
+                decision.Claims["allow_schedule"] = features.Contains("schedule");
+                decision.Claims["allow_authoring"] = true;
+                decision.Claims["allow_premium_datasets"] = features.Contains("premium_datasets");
+                break;
 
-    private static string[] ResolveRoles(UserContext user, EntitlementContext entitlements)
-    {
-        if (entitlements.PlanTier == PlanTier.Enterprise && user.SeatType == SeatType.Designer)
-            return ["WYN_DESIGNER"];
+            case SubscriptionPlan.Pro:
+                roles.Add("WYN_VIEWER");
+                decision.Claims["allow_export"] = features.Contains("export");
+                decision.Claims["allow_schedule"] = features.Contains("schedule");
+                decision.Claims["allow_authoring"] = false;
+                decision.Claims["allow_premium_datasets"] = false;
+                break;
 
-        if (entitlements.PlanTier == PlanTier.Pro)
-            return ["WYN_VIEWER", "WYN_PRO_FEATURES"];
+            case SubscriptionPlan.Free:
+                roles.Add("WYN_VIEWER");
+                decision.Claims["allow_export"] = false;
+                decision.Claims["allow_schedule"] = false;
+                decision.Claims["allow_authoring"] = false;
+                decision.Claims["allow_premium_datasets"] = false;
+                break;
 
-        return ["WYN_VIEWER"];
-    }
+            case SubscriptionPlan.Custom:
+            default:
+                roles.Add("WYN_VIEWER");
+                decision.Claims["allow_export"] = features.Contains("export");
+                decision.Claims["allow_schedule"] = features.Contains("schedule");
+                decision.Claims["allow_authoring"] = features.Contains("authoring");
+                decision.Claims["allow_premium_datasets"] = features.Contains("premium_datasets");
+                break;
+        }
 
-    private static PolicyDecision BuildReadOnlyDecision(UserContext user, string reason)
-    {
-        var claims = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["tenant_id"] = user.TenantId,
-            ["user_id"] = user.UserId,
-            ["security_posture"] = SecurityPosture.IncidentMode.ToString(),
-            ["allow_export"] = bool.FalseString,
-            ["allow_scheduling"] = bool.FalseString,
-            ["allow_download"] = bool.FalseString
-        };
-
-        return new PolicyDecision
-        {
-            IsAllowed = true,
-            ReasonCode = reason,
-            Roles = ["WYN_READ_ONLY"],
-            Claims = claims
-        };
-    }
-
-    private async Task<PolicyDecision> Deny(UserContext user, string reason, CancellationToken cancellationToken)
-    {
-        var decision = new PolicyDecision
-        {
-            IsAllowed = false,
-            ReasonCode = reason,
-            Roles = [],
-            Claims = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["tenant_id"] = user.TenantId,
-                ["user_id"] = user.UserId,
-                ["security_posture"] = SecurityPosture.Normal.ToString()
-            }
-        };
-
-        await auditSink.WriteAsync(user.TenantId, user.UserId, decision.IsAllowed, decision.ReasonCode, decision.Roles, cancellationToken);
-        return decision;
+        decision.Roles = roles.ToArray();
     }
 }

@@ -1,32 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <AssemblyName>CustomSecProvider.RA</AssemblyName>
-    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <TargetFramework>net8.0</TargetFramework>
-    <LangVersion>latest</LangVersion>
-    <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <AssemblyName>CustomSecProvider.RA</AssemblyName>
+    <RootNamespace>CustomSecProvider.RA</RootNamespace>
   </PropertyGroup>
 
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) and Exists('C:\Program Files\Wyn Enterprise\Server\GrapeCity.Enterprise.Identity.SecurityProvider.dll')">
-    <Reference Include="GrapeCity.Enterprise.Identity.SecurityProvider">
-      <HintPath>C:\Program Files\Wyn Enterprise\Server\GrapeCity.Enterprise.Identity.SecurityProvider.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="GrapeCity.Enterprise.Identity.ExternalIdentityProvider">
-      <HintPath>C:\Program Files\Wyn Enterprise\Server\GrapeCity.Enterprise.Identity.ExternalIdentityProvider.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="GrapeCity.Enterprise.Identity.ExternalIdentityProvider.Configuration">
-      <HintPath>C:\Program Files\Wyn Enterprise\Server\GrapeCity.Enterprise.Identity.ExternalIdentityProvider.Configuration.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-  </ItemGroup>
-
-  <!-- CI/Linux: exclude Wyn-specific adapter -->
-  <ItemGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
-    <Compile Remove="Wyn/CustomSecProviderSecurityProvider.cs" />
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Serilog" Version="3.1.1" />
+    <PackageReference Include="Serilog.Extensions.Logging" Version="8.0.0" />
+    <PackageReference Include="StackExchange.Redis" Version="2.7.10" />
   </ItemGroup>
 
 </Project>
