@@ -11,8 +11,10 @@ public interface IPolicyEngine
     /// Evaluate policy for a user session: resolve tenant/user state, apply entitlements,
     /// check seats, apply incident mode, and return security context with roles and claims.
     /// </summary>
+    /// <param name="userToken">User token or identifier from the login request.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Policy decision with allow/deny and assigned roles.</returns>
     Task<PolicyDecision> EvaluateAsync(
-        string userId,
-        string tenantId,
+        string userToken,
         CancellationToken cancellationToken = default);
 }

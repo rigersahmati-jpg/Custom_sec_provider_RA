@@ -1,284 +1,235 @@
 using CustomSecProvider.RA.Contracts;
 using CustomSecProvider.RA.Models;
-using Microsoft.Extensions.Logging;
 
 namespace CustomSecProvider.RA.Services;
 
 /// <summary>
-/// Core policy evaluation engine implementing the Zero-Sync Governance model.
-/// Evaluates tenant/user state, entitlements, seats, and incident mode in real time.
+/// Core policy evaluation engine implementing Zero-Sync Governance.
+/// Evaluates user/tenant state, entitlements, seat limits, and incident mode at session time.
 /// </summary>
-public class PolicyEngine : IPolicyEngine
+public sealed class PolicyEngine : IPolicyEngine
 {
-    private readonly ITenantService _tenantService;
-    private readonly IIdentityService _identityService;
-    private readonly IEntitlementsService _entitlementsService;
-    private readonly ISeatManagementService _seatService;
-    private readonly IIncidentModeService _incidentModeService;
-    private readonly IAuditLogger _auditLogger;
-    private readonly ILogger<PolicyEngine> _logger;
+    private readonly IIdentityTenantService _identityService;
+    private readonly IEntitlementService _entitlementService;
+    private readonly ISeatCounterStore _seatStore;
+    private readonly ISecurityPostureService _postureService;
+    private readonly IAuditDecisionSink _auditSink;
 
     public PolicyEngine(
-        ITenantService tenantService,
-        IIdentityService identityService,
-        IEntitlementsService entitlementsService,
-        ISeatManagementService seatService,
-        IIncidentModeService incidentModeService,
-        IAuditLogger auditLogger,
-        ILogger<PolicyEngine> logger)
+        IIdentityTenantService identityService,
+        IEntitlementService entitlementService,
+        ISeatCounterStore seatStore,
+        ISecurityPostureService postureService,
+        IAuditDecisionSink auditSink)
     {
-        _tenantService = tenantService;
-        _identityService = identityService;
-        _entitlementsService = entitlementsService;
-        _seatService = seatService;
-        _incidentModeService = incidentModeService;
-        _auditLogger = auditLogger;
-        _logger = logger;
+        _identityService = identityService ?? throw new ArgumentNullException(nameof(identityService));
+        _entitlementService = entitlementService ?? throw new ArgumentNullException(nameof(entitlementService));
+        _seatStore = seatStore ?? throw new ArgumentNullException(nameof(seatStore));
+        _postureService = postureService ?? throw new ArgumentNullException(nameof(postureService));
+        _auditSink = auditSink ?? throw new ArgumentNullException(nameof(auditSink));
     }
 
-    public async Task<PolicyDecision> EvaluateAsync(
-        string userId,
-        string tenantId,
-        CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Evaluate policy for a user session following the Zero-Sync Governance pattern.
+    /// </summary>
+    public async Task<PolicyDecision> EvaluateAsync(string userToken, CancellationToken cancellationToken = default)
     {
-        var decision = new PolicyDecision();
-
         try
         {
-            // 1. Resolve tenant context
-            var tenant = await _tenantService.ResolveTenantAsync(tenantId, cancellationToken);
-            if (tenant == null)
+            // Step 1: Resolve user and tenant context
+            var userContext = await _identityService.GetUserContextAsync(userToken, cancellationToken);
+            if (userContext == null)
             {
-                decision.IsAllowed = false;
-                decision.ReasonCode = ReasonCodes.InvalidToken;
-                decision.Message = "Tenant not found.";
-                _logger.LogWarning("Policy evaluation failed: tenant not found. TenantId={TenantId}", tenantId);
-                return decision;
+                return DenyDecision(
+                    userId: userToken,
+                    tenantId: "UNKNOWN",
+                    reasonCode: ReasonCode.USER_NOT_FOUND);
             }
 
-            // 2. Check tenant status
-            if (tenant.Status == TenantStatus.Suspended)
+            // Step 2: Check if user and tenant are active
+            if (!userContext.IsUserActive)
             {
-                decision.IsAllowed = false;
-                decision.ReasonCode = ReasonCodes.TenantSuspended;
-                decision.Message = "Your organization's analytics access is temporarily suspended.";
-                _logger.LogWarning(
-                    "Policy evaluation blocked: tenant suspended. TenantId={TenantId}, UserId={UserId}",
-                    tenantId, userId);
-                await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
-                return decision;
+                return DenyDecision(
+                    userId: userContext.UserId,
+                    tenantId: userContext.TenantId,
+                    reasonCode: ReasonCode.USER_DISABLED);
             }
 
-            if (tenant.Status == TenantStatus.PastDue)
+            if (!userContext.IsTenantActive)
             {
-                decision.IsAllowed = false;
-                decision.ReasonCode = ReasonCodes.TenantPastDue;
-                decision.Message = "Your organization's account is past due. Please contact billing.";
-                _logger.LogWarning(
-                    "Policy evaluation blocked: tenant past due. TenantId={TenantId}, UserId={UserId}",
-                    tenantId, userId);
-                await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
-                return decision;
+                return DenyDecision(
+                    userId: userContext.UserId,
+                    tenantId: userContext.TenantId,
+                    reasonCode: ReasonCode.TENANT_INACTIVE);
             }
 
-            // 3. Resolve user context
-            var user = await _identityService.ResolveUserAsync(userId, cancellationToken);
-            if (user == null)
+            // Step 3: Resolve entitlements (real-time plan check)
+            var entitlements = await _entitlementService.GetEntitlementsAsync(userContext.TenantId, cancellationToken);
+            if (entitlements == null)
             {
-                decision.IsAllowed = false;
-                decision.ReasonCode = ReasonCodes.InvalidToken;
-                decision.Message = "User not found.";
-                _logger.LogWarning(
-                    "Policy evaluation failed: user not found. UserId={UserId}, TenantId={TenantId}",
-                    userId, tenantId);
-                return decision;
+                return DenyDecision(
+                    userId: userContext.UserId,
+                    tenantId: userContext.TenantId,
+                    reasonCode: ReasonCode.TENANT_NOT_FOUND);
             }
 
-            // 4. Check user status
-            if (user.Status == UserStatus.Disabled)
+            // Step 4: Check security posture (incident mode)
+            var posture = await _postureService.GetPostureAsync(cancellationToken);
+            if (posture == SecurityPosture.IncidentDenied)
             {
-                decision.IsAllowed = false;
-                decision.ReasonCode = ReasonCodes.UserDisabled;
-                decision.Message = "Your account is disabled. Please contact your administrator.";
-                _logger.LogWarning(
-                    "Policy evaluation blocked: user disabled. UserId={UserId}, TenantId={TenantId}",
-                    userId, tenantId);
-                await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
-                return decision;
+                return DenyDecision(
+                    userId: userContext.UserId,
+                    tenantId: userContext.TenantId,
+                    reasonCode: ReasonCode.INCIDENT_MODE_DENIED);
             }
 
-            if (user.Status == UserStatus.Suspended)
+            // Step 5: Check seat limits
+            var currentSeats = await _seatStore.GetCurrentCountAsync(userContext.TenantId, userContext.SeatType, cancellationToken);
+            var maxSeats = GetMaxSeatsForType(entitlements, userContext.SeatType);
+
+            if (currentSeats >= maxSeats)
             {
-                decision.IsAllowed = false;
-                decision.ReasonCode = ReasonCodes.UserSuspended;
-                decision.Message = "Your account is suspended. Please contact your administrator.";
-                _logger.LogWarning(
-                    "Policy evaluation blocked: user suspended. UserId={UserId}, TenantId={TenantId}",
-                    userId, tenantId);
-                await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
-                return decision;
+                return DenyDecision(
+                    userId: userContext.UserId,
+                    tenantId: userContext.TenantId,
+                    reasonCode: ReasonCode.SEAT_LIMIT_EXCEEDED);
             }
 
-            // 5. Check incident mode (break-glass security)
-            var incidentModeEnabled = await _incidentModeService.IsIncidentModeEnabledAsync(cancellationToken);
-            if (incidentModeEnabled)
+            // Step 6: Map roles based on plan tier and security posture
+            var roles = MapRolesByPlanTier(entitlements.PlanTier, posture);
+            var claims = BuildClaims(userContext, entitlements, posture);
+
+            // Step 7: Increment seat counter
+            await _seatStore.IncrementAsync(userContext.TenantId, userContext.SeatType, cancellationToken);
+
+            // Step 8: Build allow decision
+            var decision = new PolicyDecision
             {
-                decision.Roles = new[] { "WYN_READ_ONLY" };
-                decision.Claims["security_posture"] = "incident";
-                decision.Claims["allow_export"] = false;
-                decision.Claims["allow_schedule"] = false;
-                decision.ReasonCode = ReasonCodes.IncidentMode;
-                decision.Message = "System is in incident mode. Access is read-only.";
-                decision.IsAllowed = true;
-                _logger.LogInformation(
-                    "Incident mode active. User downgraded to read-only. UserId={UserId}, TenantId={TenantId}",
-                    userId, tenantId);
-                await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
-                return decision;
-            }
+                IsAllowed = true,
+                UserId = userContext.UserId,
+                TenantId = userContext.TenantId,
+                Roles = roles,
+                Organizations = userContext.OrgUnits,
+                Claims = claims,
+                ReasonCode = ReasonCode.ACCESS_GRANTED,
+                SessionTTLSeconds = 1800 // 30 minutes
+            };
 
-            // 6. Get plan and entitlements
-            var plan = await _entitlementsService.GetPlanAsync(tenantId, cancellationToken);
-            var features = await _entitlementsService.GetEnabledFeaturesAsync(tenantId, cancellationToken);
+            // Step 9: Audit
+            await _auditSink.WriteAsync(
+                userContext.TenantId,
+                userContext.UserId,
+                true,
+                ReasonCode.ACCESS_GRANTED,
+                roles.ToList(),
+                cancellationToken);
 
-            // 7. Check seat limits based on seat type
-            if (user.SeatType == SeatType.Designer || user.SeatType == SeatType.Admin)
-            {
-                var canAllocate = await _seatService.CanAllocateSeatAsync(tenantId, user.SeatType, cancellationToken);
-                if (!canAllocate)
-                {
-                    decision.IsAllowed = false;
-                    decision.ReasonCode = ReasonCodes.SeatLimitExceeded;
-                    decision.Message = "Your organization has reached the maximum Designer seats. Please upgrade or contact support.";
-                    _logger.LogWarning(
-                        "Policy evaluation blocked: designer seat limit exceeded. UserId={UserId}, TenantId={TenantId}",
-                        userId, tenantId);
-                    await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
-                    return decision;
-                }
-            }
-            else if (user.SeatType == SeatType.Viewer)
-            {
-                var canAllocate = await _seatService.CanAllocateSeatAsync(tenantId, SeatType.Viewer, cancellationToken);
-                if (!canAllocate)
-                {
-                    decision.IsAllowed = false;
-                    decision.ReasonCode = ReasonCodes.SeatLimitExceeded;
-                    decision.Message = "Your organization has reached the maximum Viewer seats. Please upgrade or contact support.";
-                    _logger.LogWarning(
-                        "Policy evaluation blocked: viewer seat limit exceeded. UserId={UserId}, TenantId={TenantId}",
-                        userId, tenantId);
-                    await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
-                    return decision;
-                }
-            }
-
-            // 8. Map plan to Wyn roles and inject claims
-            ApplyRoleMapping(decision, plan, features, user, tenant);
-
-            // 9. Mark success
-            decision.IsAllowed = true;
-            decision.ReasonCode = ReasonCodes.Success;
-            decision.Message = "Access granted.";
-
-            _logger.LogInformation(
-                "Policy evaluation succeeded. UserId={UserId}, TenantId={TenantId}, Plan={Plan}, Roles={Roles}",
-                userId, tenantId, plan, string.Join(",", decision.Roles));
-
-            await _auditLogger.LogDecisionAsync(userId, tenantId, decision, cancellationToken);
             return decision;
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Policy evaluation error. UserId={UserId}, TenantId={TenantId}",
-                userId, tenantId);
-
-            decision.IsAllowed = false;
-            decision.ReasonCode = ReasonCodes.BackendUnavailable;
-            decision.Message = "An error occurred during policy evaluation. Please retry.";
-            return decision;
+            // Log and fail closed
+            return DenyDecision(
+                userId: userToken,
+                tenantId: "UNKNOWN",
+                reasonCode: ReasonCode.EVALUATION_ERROR);
         }
     }
 
-    private void ApplyRoleMapping(
-        PolicyDecision decision,
-        SubscriptionPlan plan,
-        string[] features,
-        UserContext user,
-        TenantContext tenant)
+    /// <summary>
+    /// Build a deny decision with audit.
+    /// </summary>
+    private PolicyDecision DenyDecision(string userId, string tenantId, string reasonCode)
     {
-        // Initialize claims
-        decision.Claims["tenant_id"] = tenant.TenantId;
-        decision.Claims["user_id"] = user.UserId;
-        decision.Claims["data_region"] = tenant.DataRegion;
-        decision.Claims["plan_tier"] = plan.ToString();
-        decision.Claims["security_posture"] = "normal";
-        decision.Claims["seat_type"] = user.SeatType.ToString();
+        // Audit deny decision (fire and forget to avoid blocking on audit errors)
+        _ = _auditSink.WriteAsync(tenantId, userId, false, reasonCode, Array.Empty<string>());
 
-        if (!string.IsNullOrEmpty(tenant.OrgUnit))
+        return new PolicyDecision
         {
-            decision.Claims["org_unit"] = tenant.OrgUnit;
-        }
+            IsAllowed = false,
+            UserId = userId,
+            TenantId = tenantId,
+            Roles = Array.Empty<string>(),
+            ReasonCode = reasonCode,
+            SessionTTLSeconds = 0
+        };
+    }
 
-        if (features.Length > 0)
-        {
-            decision.Claims["enabled_features"] = features;
-        }
-
-        // Map plan to Wyn roles
+    /// <summary>
+    /// Map roles based on plan tier.
+    /// </summary>
+    private static IEnumerable<string> MapRolesByPlanTier(PlanTier planTier, SecurityPosture posture)
+    {
         var roles = new List<string>();
 
-        switch (plan)
+        // If incident mode is read-only, only grant Viewer
+        if (posture == SecurityPosture.IncidentReadOnly)
         {
-            case SubscriptionPlan.Enterprise:
-                if (user.SeatType == SeatType.Admin)
-                {
-                    roles.Add("WYN_TENANT_ADMIN");
-                }
-                else if (user.SeatType == SeatType.Designer)
-                {
-                    roles.Add("WYN_DESIGNER");
-                }
-                else
-                {
-                    roles.Add("WYN_VIEWER");
-                }
+            roles.Add("Viewer");
+            return roles;
+        }
 
-                // Enterprise features
-                decision.Claims["allow_export"] = features.Contains("export");
-                decision.Claims["allow_schedule"] = features.Contains("schedule");
-                decision.Claims["allow_authoring"] = true;
-                decision.Claims["allow_premium_datasets"] = features.Contains("premium_datasets");
+        // Map roles by plan tier
+        switch (planTier)
+        {
+            case PlanTier.Free:
+                roles.Add("Viewer");
                 break;
 
-            case SubscriptionPlan.Pro:
-                roles.Add("WYN_VIEWER");
-                decision.Claims["allow_export"] = features.Contains("export");
-                decision.Claims["allow_schedule"] = features.Contains("schedule");
-                decision.Claims["allow_authoring"] = false;
-                decision.Claims["allow_premium_datasets"] = false;
+            case PlanTier.Pro:
+                roles.Add("Viewer");
+                roles.Add("Designer");
                 break;
 
-            case SubscriptionPlan.Free:
-                roles.Add("WYN_VIEWER");
-                decision.Claims["allow_export"] = false;
-                decision.Claims["allow_schedule"] = false;
-                decision.Claims["allow_authoring"] = false;
-                decision.Claims["allow_premium_datasets"] = false;
-                break;
-
-            case SubscriptionPlan.Custom:
-            default:
-                roles.Add("WYN_VIEWER");
-                decision.Claims["allow_export"] = features.Contains("export");
-                decision.Claims["allow_schedule"] = features.Contains("schedule");
-                decision.Claims["allow_authoring"] = features.Contains("authoring");
-                decision.Claims["allow_premium_datasets"] = features.Contains("premium_datasets");
+            case PlanTier.Enterprise:
+                roles.Add("Viewer");
+                roles.Add("Designer");
+                roles.Add("Admin");
                 break;
         }
 
-        decision.Roles = roles.ToArray();
+        return roles;
+    }
+
+    /// <summary>
+    /// Build immutable claims for data scoping and feature control.
+    /// </summary>
+    private static IReadOnlyDictionary<string, object> BuildClaims(
+        UserContext userContext,
+        EntitlementContext entitlements,
+        SecurityPosture posture)
+    {
+        var claims = new Dictionary<string, object>
+        {
+            ["sub"] = userContext.UserId,
+            ["tenant_id"] = userContext.TenantId,
+            ["plan_tier"] = entitlements.PlanTier.ToString(),
+            ["data_region"] = userContext.DataRegion,
+            ["allow_export"] = entitlements.AllowExport && posture != SecurityPosture.IncidentReadOnly,
+            ["allow_scheduling"] = entitlements.AllowScheduling && posture != SecurityPosture.IncidentReadOnly,
+            ["allow_premium_datasets"] = entitlements.AllowPremiumDatasets,
+            ["incident_mode"] = posture != SecurityPosture.Normal
+        };
+
+        if (userContext.OrgUnits.Length > 0)
+        {
+            claims["org_units"] = userContext.OrgUnits;
+        }
+
+        return claims;
+    }
+
+    /// <summary>
+    /// Get max concurrent seats for a seat type based on entitlements.
+    /// </summary>
+    private static int GetMaxSeatsForType(EntitlementContext entitlements, SeatType seatType)
+    {
+        return seatType switch
+        {
+            SeatType.Viewer => entitlements.MaxConcurrentViewers,
+            SeatType.Designer => entitlements.MaxConcurrentDesigners,
+            SeatType.Admin => entitlements.MaxConcurrentAdmins,
+            _ => 0
+        };
     }
 }

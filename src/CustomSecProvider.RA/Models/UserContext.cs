@@ -1,43 +1,28 @@
 namespace CustomSecProvider.RA.Models;
 
 /// <summary>
-/// Represents user context resolved from the SaaS backend.
+/// User identity and tenant context resolved from the identity provider.
 /// </summary>
-public class UserContext
+public sealed class UserContext
 {
-    /// <summary>Unique user identifier.</summary>
+    /// <summary>Unique user identifier in the SaaS platform.</summary>
     public required string UserId { get; set; }
 
-    /// <summary>Tenant identifier this user belongs to.</summary>
+    /// <summary>Tenant identifier for multi-tenant scoping.</summary>
     public required string TenantId { get; set; }
 
-    /// <summary>User's account status (Active, Disabled, Suspended, PendingActivation).</summary>
-    public required UserStatus Status { get; set; }
+    /// <summary>Whether the user account is active (not disabled/suspended).</summary>
+    public required bool IsUserActive { get; set; }
 
-    /// <summary>Assigned seat type (Viewer, Designer, Admin).</summary>
+    /// <summary>Whether the tenant account is active (not suspended).</summary>
+    public required bool IsTenantActive { get; set; }
+
+    /// <summary>Primary seat type this user holds.</summary>
     public required SeatType SeatType { get; set; }
 
-    /// <summary>User's display name or email.</summary>
-    public string? DisplayName { get; set; }
+    /// <summary>Data residency region (e.g., US, EU, APAC).</summary>
+    public required string DataRegion { get; set; }
 
-    /// <summary>Internal application role (AccountOwner, Analyst, Staff).</summary>
-    public string? InternalAppRole { get; set; }
-}
-
-/// <summary>User account status enumeration.</summary>
-public enum UserStatus
-{
-    Active = 0,
-    Disabled = 1,
-    Suspended = 2,
-    PendingActivation = 3,
-    Deleted = 4
-}
-
-/// <summary>Analytics seat type enumeration.</summary>
-public enum SeatType
-{
-    Viewer = 0,
-    Designer = 1,
-    Admin = 2
+    /// <summary>Organizational units or departments this user belongs to.</summary>
+    public string[] OrgUnits { get; set; } = Array.Empty<string>();
 }
