@@ -1,12 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <AssemblyName>CustomSecProvider.RA</AssemblyName>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <TargetFramework>net8.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
-  <!-- Windows local (Wyn installed) references only -->
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) and Exists('C:\Program Files\Wyn Enterprise\Server\GrapeCity.Enterprise.Identity.SecurityProvider.dll')">
     <Reference Include="GrapeCity.Enterprise.Identity.SecurityProvider">
       <HintPath>C:\Program Files\Wyn Enterprise\Server\GrapeCity.Enterprise.Identity.SecurityProvider.dll</HintPath>
@@ -20,11 +22,6 @@
       <HintPath>C:\Program Files\Wyn Enterprise\Server\GrapeCity.Enterprise.Identity.ExternalIdentityProvider.Configuration.dll</HintPath>
       <Private>false</Private>
     </Reference>
-  </ItemGroup>
-
-  <!-- CI/Linux: exclude Wyn-specific adapter -->
-  <ItemGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
-    <Compile Remove="Wyn\CustomSecProviderSecurityProvider.cs" />
   </ItemGroup>
 
 </Project>
