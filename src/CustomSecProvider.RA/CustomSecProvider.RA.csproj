@@ -24,4 +24,9 @@
     </Reference>
   </ItemGroup>
 
+  <!-- CI/Linux: exclude Wyn-specific adapter -->
+  <ItemGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
+    <Compile Remove="Wyn/CustomSecProviderSecurityProvider.cs" />
+  </ItemGroup>
+
 </Project>
