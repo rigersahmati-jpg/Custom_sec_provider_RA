@@ -11,6 +11,7 @@
     <OutputType>Library</OutputType>
     <PlatformTarget>x64</PlatformTarget>
     <DebugType>embedded</DebugType>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <!-- Minimal required NuGet packages -->
@@ -19,7 +20,7 @@
   </ItemGroup>
 
   <!-- Wyn Enterprise SDK References (Version 9.1.00172.0) -->
-  <!-- These DLLs are in: C:\Program Files\Wyn Enterprise\Server\ -->
+  <!-- Copy to SecurityProviders folder: HintPath + Private=false = reference only, don't copy -->
   <ItemGroup>
     <Reference Include="GrapeCity.Enterprise.Identity.SecurityProvider">
       <HintPath>C:\Program Files\Wyn Enterprise\Server\GrapeCity.Enterprise.Identity.SecurityProvider.dll</HintPath>
