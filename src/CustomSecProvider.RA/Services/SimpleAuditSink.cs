@@ -6,9 +6,6 @@ using CustomSecProvider.RA.Contracts;
 
 namespace CustomSecProvider.RA.Services;
 
-/// <summary>
-/// Simple audit sink that logs to Debug output for quick testing.
-/// </summary>
 public sealed class SimpleAuditSink : IAuditDecisionSink
 {
     public Task WriteAsync(

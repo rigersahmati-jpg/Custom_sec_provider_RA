@@ -8,13 +8,6 @@ using CustomSecProvider.RA.Models;
 
 namespace CustomSecProvider.RA.Services;
 
-/// <summary>
-/// In-memory seat counter store for quick testing.
-/// Tracks active seats per tenant + seat type in a Dictionary.
-/// 
-/// PRODUCTION NOTE: Replace with Redis or database when deployed.
-/// Current implementation resets on Wyn service restart.
-/// </summary>
 public sealed class InMemorySeatCounterStore : ISeatCounterStore
 {
     private static readonly Dictionary<string, int> Counters = new();

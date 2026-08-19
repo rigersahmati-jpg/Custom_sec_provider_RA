@@ -6,15 +6,6 @@ using CustomSecProvider.RA.Models;
 
 namespace CustomSecProvider.RA.Services;
 
-/// <summary>
-/// Production-ready entitlements service.
-/// Resolves plan tier and feature entitlements based on tenant ID.
-/// 
-/// QUICK-START:
-/// - Free plan: 10 concurrent viewers, no export/scheduling
-/// - Pro plan: 25 concurrent viewers/designers, export enabled
-/// - Enterprise plan: Unlimited, all features
-/// </summary>
 public sealed class RealEntitlementService : IEntitlementService
 {
     private readonly HttpClient _httpClient;
@@ -33,7 +24,6 @@ public sealed class RealEntitlementService : IEntitlementService
             if (string.IsNullOrWhiteSpace(tenantId))
                 return null;
 
-            // QUICK-START MODE: Tenant ID pattern matching
             PlanTier planTier;
             if (tenantId.StartsWith("enterprise-", StringComparison.OrdinalIgnoreCase))
                 planTier = PlanTier.Enterprise;
@@ -42,7 +32,6 @@ public sealed class RealEntitlementService : IEntitlementService
             else
                 planTier = PlanTier.Free;
 
-            // Return demo entitlements based on plan tier
             return planTier switch
             {
                 PlanTier.Free => new EntitlementContext

@@ -11,18 +11,9 @@ using CustomSecProvider.RA.Models;
 
 namespace CustomSecProvider.RA.Wyn;
 
-/// <summary>
-/// Custom Security Provider for Wyn Enterprise - PRODUCTION READY.
-/// Implements real-time policy evaluation using production-ready services.
-/// 
-/// READY TO DEPLOY: Uses in-memory seat counters and demo identity/entitlements.
-/// For production, update service constructors to use database-backed implementations.
-/// </summary>
 public sealed class CustomSecProviderSecurityProvider : ISecurityProvider
 {
     private readonly PolicyEngine _policyEngine;
-
-    // Session storage (replace with Redis for production)
     private static readonly Dictionary<string, SessionRecord> Sessions = new();
     private static readonly object _sessionsLock = new object();
 
@@ -32,23 +23,18 @@ public sealed class CustomSecProviderSecurityProvider : ISecurityProvider
     {
         try
         {
-            // ============================================================
-            // PRODUCTION-READY SERVICE WIRING
-            // ============================================================
-            // These now use real implementations with demo fallback:
-            var identity = new RealIdentityTenantService();           // Resolves user/tenant
-            var entitlements = new RealEntitlementService();          // Resolves plan tier
-            var seats = new InMemorySeatCounterStore();               // Tracks active seats
-            var posture = new SimpleSecurityPostureService();         // Handles incident mode
-            var audit = new SimpleAuditSink();                        // Logs decisions
+            var identity = new RealIdentityTenantService();
+            var entitlements = new RealEntitlementService();
+            var seats = new InMemorySeatCounterStore();
+            var posture = new SimpleSecurityPostureService();
+            var audit = new SimpleAuditSink();
 
             _policyEngine = new PolicyEngine(identity, entitlements, seats, posture, audit);
-
-            System.Diagnostics.Debug.WriteLine("[CustomSecProviderSecurityProvider] Initialized with production-ready services.");
+            System.Diagnostics.Debug.WriteLine("[CustomSecProviderSecurityProvider] Initialized successfully.");
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[CustomSecProviderSecurityProvider] Initialization error: {ex.Message}");
+            System.Diagnostics.Debug.WriteLine($"[CustomSecProviderSecurityProvider] Init error: {ex.Message}");
             throw;
         }
     }
@@ -57,28 +43,15 @@ public sealed class CustomSecProviderSecurityProvider : ISecurityProvider
     {
         try
         {
-            // Extract user token from Wyn login request
-            // Expected format: "userId|tenantId|seatType" or just "userId"
             var userToken = !string.IsNullOrWhiteSpace(username) ? username : customizedParam?.ToString();
-
             if (string.IsNullOrWhiteSpace(userToken))
-            {
-                System.Diagnostics.Debug.WriteLine("[GenerateTokenAsync] No user token provided.");
                 return null;
-            }
 
-            // Evaluate policy (identity, entitlements, seat limits, incident mode)
             var decision = await _policyEngine.EvaluateAsync(userToken);
-
             if (!decision.IsAllowed)
-            {
-                System.Diagnostics.Debug.WriteLine($"[GenerateTokenAsync] Policy denied user {userToken}: {decision.ReasonCode}");
                 return null;
-            }
 
-            // Create session record
             var token = Guid.NewGuid().ToString("N");
-
             lock (_sessionsLock)
             {
                 Sessions[token] = new SessionRecord
@@ -92,130 +65,70 @@ public sealed class CustomSecProviderSecurityProvider : ISecurityProvider
                     Claims = decision.Claims
                 };
             }
-
-            System.Diagnostics.Debug.WriteLine($"[GenerateTokenAsync] Token generated for {decision.UserId} in {decision.TenantId}. Roles: {string.Join(",", decision.Roles)}");
             return token;
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[GenerateTokenAsync] Exception: {ex.Message}");
+            System.Diagnostics.Debug.WriteLine($"[GenerateTokenAsync] Error: {ex.Message}");
             return null;
         }
     }
 
     public Task<bool> ValidateTokenAsync(string token)
     {
-        try
+        lock (_sessionsLock)
         {
-            lock (_sessionsLock)
+            if (!Sessions.TryGetValue(token, out var s))
+                return Task.FromResult(false);
+            if (DateTime.UtcNow > s.ExpiresAtUtc)
             {
-                if (!Sessions.TryGetValue(token, out var s))
-                    return Task.FromResult(false);
-
-                if (DateTime.UtcNow > s.ExpiresAtUtc)
-                {
-                    Sessions.Remove(token);
-                    System.Diagnostics.Debug.WriteLine($"[ValidateTokenAsync] Token expired: {token}");
-                    return Task.FromResult(false);
-                }
-
-                return Task.FromResult(true);
+                Sessions.Remove(token);
+                return Task.FromResult(false);
             }
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[ValidateTokenAsync] Exception: {ex.Message}");
-            return Task.FromResult(false);
+            return Task.FromResult(true);
         }
     }
 
     public Task DisposeTokenAsync(string token)
     {
-        try
-        {
-            lock (_sessionsLock)
-            {
-                Sessions.Remove(token);
-            }
-            System.Diagnostics.Debug.WriteLine($"[DisposeTokenAsync] Token disposed: {token}");
-            return Task.CompletedTask;
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[DisposeTokenAsync] Exception: {ex.Message}");
-            return Task.CompletedTask;
-        }
+        lock (_sessionsLock) { Sessions.Remove(token); }
+        return Task.CompletedTask;
     }
 
     public Task<IExternalUserContext> GetUserContextAsync(string token)
     {
-        try
-        {
-            var user = Resolve(token);
-            return Task.FromResult<IExternalUserContext>(user);
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[GetUserContextAsync] Exception: {ex.Message}");
-            return Task.FromResult<IExternalUserContext>(null);
-        }
+        var user = Resolve(token);
+        return Task.FromResult<IExternalUserContext>(user);
     }
 
     public Task<IExternalUserDescriptor> GetUserDescriptorAsync(string token)
     {
-        try
-        {
-            var user = Resolve(token);
-            return Task.FromResult<IExternalUserDescriptor>(user);
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[GetUserDescriptorAsync] Exception: {ex.Message}");
-            return Task.FromResult<IExternalUserDescriptor>(null);
-        }
+        var user = Resolve(token);
+        return Task.FromResult<IExternalUserDescriptor>(user);
     }
 
     public Task<string[]> GetUserRolesAsync(string token)
     {
-        try
-        {
-            var user = Resolve(token);
-            return Task.FromResult(user?.Roles?.ToArray() ?? Array.Empty<string>());
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[GetUserRolesAsync] Exception: {ex.Message}");
-            return Task.FromResult(Array.Empty<string>());
-        }
+        var user = Resolve(token);
+        return Task.FromResult(user?.Roles?.ToArray() ?? Array.Empty<string>());
     }
 
     public Task<string[]> GetUserOrganizationsAsync(string token)
     {
-        try
-        {
-            var user = Resolve(token);
-            return Task.FromResult(user?.Organizations?.ToArray() ?? Array.Empty<string>());
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[GetUserOrganizationsAsync] Exception: {ex.Message}");
-            return Task.FromResult(Array.Empty<string>());
-        }
+        var user = Resolve(token);
+        return Task.FromResult(user?.Organizations?.ToArray() ?? Array.Empty<string>());
     }
 
     private WynExternalUser Resolve(string token)
     {
         lock (_sessionsLock)
         {
-            if (!Sessions.TryGetValue(token, out var s))
-                return null;
-
+            if (!Sessions.TryGetValue(token, out var s)) return null;
             if (DateTime.UtcNow > s.ExpiresAtUtc)
             {
                 Sessions.Remove(token);
                 return null;
             }
-
             return new WynExternalUser(s.UserId, s.Roles, s.Organizations, s.TenantId, s.Claims);
         }
     }
@@ -231,18 +144,9 @@ public sealed class CustomSecProviderSecurityProvider : ISecurityProvider
         public IReadOnlyDictionary<string, object> Claims { get; init; } = new Dictionary<string, object>();
     }
 
-    /// <summary>
-    /// Minimal adapter implementing Wyn's external user context interfaces.
-    /// Passed to Wyn to populate session claims and roles.
-    /// </summary>
     private sealed class WynExternalUser : IExternalUserContext, IExternalUserDescriptor
     {
-        public WynExternalUser(
-            string userId, 
-            IEnumerable<string> roles, 
-            IEnumerable<string> orgs,
-            string tenantId = null,
-            IReadOnlyDictionary<string, object> claims = null)
+        public WynExternalUser(string userId, IEnumerable<string> roles, IEnumerable<string> orgs, string tenantId = null, IReadOnlyDictionary<string, object> claims = null)
         {
             Id = userId;
             Name = userId;

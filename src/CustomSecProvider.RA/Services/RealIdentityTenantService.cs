@@ -6,14 +6,6 @@ using CustomSecProvider.RA.Models;
 
 namespace CustomSecProvider.RA.Services;
 
-/// <summary>
-/// Production-ready identity service.
-/// Resolves user/tenant context from the incoming userToken (user identifier).
-/// This implementation expects the userToken to be in format: "userId|tenantId|seatType"
-/// or a direct user identifier that you can look up in your system.
-/// 
-/// ADAPT THIS TO YOUR ACTUAL BACKEND: Replace hardcoded logic with HTTP calls to your identity API.
-/// </summary>
 public sealed class RealIdentityTenantService : IIdentityTenantService
 {
     private readonly HttpClient _httpClient;
@@ -25,9 +17,6 @@ public sealed class RealIdentityTenantService : IIdentityTenantService
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
     }
 
-    /// <summary>
-    /// Resolve user and tenant context from userToken.
-    /// </summary>
     public async Task<UserContext?> GetUserContextAsync(string userToken, CancellationToken cancellationToken = default)
     {
         try
@@ -35,10 +24,6 @@ public sealed class RealIdentityTenantService : IIdentityTenantService
             if (string.IsNullOrWhiteSpace(userToken))
                 return null;
 
-            // QUICK-START MODE: Parse userToken directly
-            // Format: "userId|tenantId|seatType" or just "userId"
-            // Example: "alice@company.com|TENANT-001|Designer"
-            
             var parts = userToken.Split('|');
             var userId = parts[0].Trim();
             var tenantId = parts.Length > 1 ? parts[1].Trim() : "T-DEFAULT";
@@ -47,7 +32,6 @@ public sealed class RealIdentityTenantService : IIdentityTenantService
             if (!Enum.TryParse<SeatType>(seatTypeStr, ignoreCase: true, out var seatType))
                 seatType = SeatType.Viewer;
 
-            // Demo user context (ready for Wyn testing)
             return new UserContext
             {
                 UserId = userId,

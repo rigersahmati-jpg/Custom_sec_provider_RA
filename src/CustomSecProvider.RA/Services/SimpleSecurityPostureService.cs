@@ -6,10 +6,6 @@ using CustomSecProvider.RA.Models;
 
 namespace CustomSecProvider.RA.Services;
 
-/// <summary>
-/// Simple security posture service for quick testing.
-/// Always returns SecurityPosture.Normal unless environment variable is set.
-/// </summary>
 public sealed class SimpleSecurityPostureService : ISecurityPostureService
 {
     public Task<SecurityPosture> GetPostureAsync(CancellationToken cancellationToken = default)

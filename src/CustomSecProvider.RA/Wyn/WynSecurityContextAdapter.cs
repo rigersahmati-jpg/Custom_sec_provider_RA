@@ -1,5 +1,4 @@
 using CustomSecProvider.RA.Models;
-using CustomSecProvider.RA.Services;
 
 namespace CustomSecProvider.RA.Wyn;
 
@@ -19,6 +18,6 @@ public sealed class WynSecurityContextAdapter
 public sealed class WynSecurityContext
 {
     public required bool IsAuthenticated { get; init; }
-    public required string[] Roles { get; init; } = [];
-    public required Dictionary<string, string> Claims { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    public required IEnumerable<string> Roles { get; init; } = new List<string>();
+    public required IReadOnlyDictionary<string, object> Claims { get; init; } = new Dictionary<string, object>();
 }

@@ -3,10 +3,6 @@ using CustomSecProvider.RA.Models;
 
 namespace CustomSecProvider.RA.Services;
 
-/// <summary>
-/// Core policy evaluation engine implementing Zero-Sync Governance.
-/// Evaluates user/tenant state, entitlements, seat limits, and incident mode at session time.
-/// </summary>
 public sealed class PolicyEngine : IPolicyEngine
 {
     private readonly IIdentityTenantService _identityService;
@@ -29,14 +25,10 @@ public sealed class PolicyEngine : IPolicyEngine
         _auditSink = auditSink ?? throw new ArgumentNullException(nameof(auditSink));
     }
 
-    /// <summary>
-    /// Evaluate policy for a user session following the Zero-Sync Governance pattern.
-    /// </summary>
     public async Task<PolicyDecision> EvaluateAsync(string userToken, CancellationToken cancellationToken = default)
     {
         try
         {
-            // Step 1: Resolve user and tenant context
             var userContext = await _identityService.GetUserContextAsync(userToken, cancellationToken);
             if (userContext == null)
             {
@@ -46,7 +38,6 @@ public sealed class PolicyEngine : IPolicyEngine
                     reasonCode: ReasonCode.USER_NOT_FOUND);
             }
 
-            // Step 2: Check if user and tenant are active
             if (!userContext.IsUserActive)
             {
                 return DenyDecision(
@@ -63,7 +54,6 @@ public sealed class PolicyEngine : IPolicyEngine
                     reasonCode: ReasonCode.TENANT_INACTIVE);
             }
 
-            // Step 3: Resolve entitlements (real-time plan check)
             var entitlements = await _entitlementService.GetEntitlementsAsync(userContext.TenantId, cancellationToken);
             if (entitlements == null)
             {
@@ -73,7 +63,6 @@ public sealed class PolicyEngine : IPolicyEngine
                     reasonCode: ReasonCode.TENANT_NOT_FOUND);
             }
 
-            // Step 4: Check security posture (incident mode)
             var posture = await _postureService.GetPostureAsync(cancellationToken);
             if (posture == SecurityPosture.IncidentDenied)
             {
@@ -83,7 +72,6 @@ public sealed class PolicyEngine : IPolicyEngine
                     reasonCode: ReasonCode.INCIDENT_MODE_DENIED);
             }
 
-            // Step 5: Check seat limits
             var currentSeats = await _seatStore.GetCurrentCountAsync(userContext.TenantId, userContext.SeatType, cancellationToken);
             var maxSeats = GetMaxSeatsForType(entitlements, userContext.SeatType);
 
@@ -95,14 +83,11 @@ public sealed class PolicyEngine : IPolicyEngine
                     reasonCode: ReasonCode.SEAT_LIMIT_EXCEEDED);
             }
 
-            // Step 6: Map roles based on plan tier and security posture
             var roles = MapRolesByPlanTier(entitlements.PlanTier, posture);
             var claims = BuildClaims(userContext, entitlements, posture);
 
-            // Step 7: Increment seat counter
             await _seatStore.IncrementAsync(userContext.TenantId, userContext.SeatType, cancellationToken);
 
-            // Step 8: Build allow decision
             var decision = new PolicyDecision
             {
                 IsAllowed = true,
@@ -112,10 +97,9 @@ public sealed class PolicyEngine : IPolicyEngine
                 Organizations = userContext.OrgUnits,
                 Claims = claims,
                 ReasonCode = ReasonCode.ACCESS_GRANTED,
-                SessionTTLSeconds = 1800 // 30 minutes
+                SessionTTLSeconds = 1800
             };
 
-            // Step 9: Audit
             await _auditSink.WriteAsync(
                 userContext.TenantId,
                 userContext.UserId,
@@ -128,7 +112,6 @@ public sealed class PolicyEngine : IPolicyEngine
         }
         catch (Exception ex)
         {
-            // Log and fail closed
             return DenyDecision(
                 userId: userToken,
                 tenantId: "UNKNOWN",
@@ -136,14 +119,9 @@ public sealed class PolicyEngine : IPolicyEngine
         }
     }
 
-    /// <summary>
-    /// Build a deny decision with audit.
-    /// </summary>
     private PolicyDecision DenyDecision(string userId, string tenantId, string reasonCode)
     {
-        // Audit deny decision (fire and forget to avoid blocking on audit errors)
         _ = _auditSink.WriteAsync(tenantId, userId, false, reasonCode, Array.Empty<string>());
-
         return new PolicyDecision
         {
             IsAllowed = false,
@@ -155,21 +133,16 @@ public sealed class PolicyEngine : IPolicyEngine
         };
     }
 
-    /// <summary>
-    /// Map roles based on plan tier.
-    /// </summary>
     private static IEnumerable<string> MapRolesByPlanTier(PlanTier planTier, SecurityPosture posture)
     {
         var roles = new List<string>();
 
-        // If incident mode is read-only, only grant Viewer
         if (posture == SecurityPosture.IncidentReadOnly)
         {
             roles.Add("Viewer");
             return roles;
         }
 
-        // Map roles by plan tier
         switch (planTier)
         {
             case PlanTier.Free:
@@ -191,9 +164,6 @@ public sealed class PolicyEngine : IPolicyEngine
         return roles;
     }
 
-    /// <summary>
-    /// Build immutable claims for data scoping and feature control.
-    /// </summary>
     private static IReadOnlyDictionary<string, object> BuildClaims(
         UserContext userContext,
         EntitlementContext entitlements,
@@ -219,9 +189,6 @@ public sealed class PolicyEngine : IPolicyEngine
         return claims;
     }
 
-    /// <summary>
-    /// Get max concurrent seats for a seat type based on entitlements.
-    /// </summary>
     private static int GetMaxSeatsForType(EntitlementContext entitlements, SeatType seatType)
     {
         return seatType switch
